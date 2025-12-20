@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: dreamlook-proxy-gateway
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: GATEWAY_SECRET
+        value: dreamlook-gateway-secret-2024
+      - key: PROXY_HOST
+        value: na.proxys5.net
+      - key: PROXY_PORT
+        value: "6200"
+      - key: PROXY_USER
+        value: 15012685-zone-custom-region-US
+      - key: PROXY_PASS
+        sync: false  # Will be set manually in dashboard for security
+    healthCheckPath: /health
