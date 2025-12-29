@@ -215,6 +215,92 @@ app.get('/health', (req, res) => {
 });
 
 /**
+ * Sticky Proxy endpoint for Referral Booster
+ * Uses custom proxy credentials per request for session persistence
+ * Request body should include proxyConfig with host, port, username, password
+ */
+app.post('/proxy-sticky', async (req, res) => {
+    const requestId = ++requestCounter;
+    const startTime = Date.now();
+
+    // Verify request from Worker
+    const authHeader = req.headers['x-gateway-secret'];
+    if (authHeader !== GATEWAY_SECRET) {
+        log(requestId, '❌ Unauthorized sticky proxy request');
+        return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    const { url, method, headers, body, proxyConfig } = req.body;
+
+    if (!url) {
+        log(requestId, '❌ Missing URL in sticky proxy request');
+        return res.status(400).json({ error: 'URL is required' });
+    }
+
+    if (!proxyConfig || !proxyConfig.host || !proxyConfig.username || !proxyConfig.password) {
+        log(requestId, '❌ Missing proxyConfig in sticky proxy request');
+        return res.status(400).json({ error: 'proxyConfig with host, port, username, password is required' });
+    }
+
+    // Build custom proxy URL from provided config
+    const customProxyUrl = `http://${proxyConfig.username}:${proxyConfig.password}@${proxyConfig.host}:${proxyConfig.port || 6200}`;
+
+    log(requestId, `📤 [STICKY] ${method || 'GET'} ${url}`);
+    log(requestId, `   Proxy Session: ${proxyConfig.username.substring(0, 30)}...`);
+    log(requestId, `   User-Agent: ${headers?.['User-Agent'] || headers?.['user-agent'] || 'none'}`);
+
+    try {
+        // Create proxy agent with custom sticky session credentials
+        const agent = new HttpsProxyAgent(customProxyUrl);
+
+        // Prepare request body
+        let requestBody = null;
+        if (body) {
+            requestBody = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+
+        // Forward request with ALL headers from Worker
+        const response = await fetch(url, {
+            method: method || 'GET',
+            headers: headers || {},
+            body: requestBody,
+            agent: agent,
+            timeout: 120000 // 2 minute timeout
+        });
+
+        const responseText = await response.text();
+        const duration = Date.now() - startTime;
+
+        // Collect response headers
+        const responseHeaders = {};
+        response.headers.forEach((value, key) => {
+            responseHeaders[key] = value;
+        });
+
+        log(requestId, `📥 [STICKY] Response: ${response.status} ${response.statusText} (${duration}ms)`);
+
+        // Return response to Worker
+        res.json({
+            ok: response.ok,
+            status: response.status,
+            statusText: response.statusText,
+            headers: responseHeaders,
+            body: responseText
+        });
+
+    } catch (error) {
+        const duration = Date.now() - startTime;
+        log(requestId, `❌ [STICKY] Error after ${duration}ms: ${error.message}`);
+
+        res.status(500).json({
+            error: error.message,
+            code: error.code || 'UNKNOWN',
+            duration: duration
+        });
+    }
+});
+
+/**
  * Test proxy connection
  */
 app.get('/test-proxy', async (req, res) => {
@@ -255,9 +341,10 @@ app.get('/test-proxy', async (req, res) => {
 app.get('/', (req, res) => {
     res.json({
         name: 'DreamLook Proxy Gateway',
-        version: '1.0.0',
+        version: '1.1.0',
         endpoints: {
             '/proxy': 'POST - Forward single request through proxy',
+            '/proxy-sticky': 'POST - Forward request with custom sticky proxy config',
             '/proxy/batch': 'POST - Forward multiple requests through proxy',
             '/health': 'GET - Health check',
             '/test-proxy': 'GET - Test proxy connection'
