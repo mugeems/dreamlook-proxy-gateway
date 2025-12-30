@@ -337,15 +337,71 @@ app.get('/test-proxy', async (req, res) => {
 });
 
 /**
+ * Memory monitoring endpoint - CRITICAL for free tier optimization
+ */
+app.get('/memory', (req, res) => {
+    const stats = getStats();
+    const mem = process.memoryUsage();
+
+    // Convert bytes to MB
+    const toMB = (bytes) => Math.round(bytes / 1024 / 1024 * 100) / 100;
+
+    const memoryInfo = {
+        timestamp: new Date().toISOString(),
+        renderFreeTier: {
+            limit: '512 MB',
+            limitBytes: 512 * 1024 * 1024
+        },
+        current: {
+            rss: toMB(mem.rss),
+            heapTotal: toMB(mem.heapTotal),
+            heapUsed: toMB(mem.heapUsed),
+            external: toMB(mem.external),
+            arrayBuffers: toMB(mem.arrayBuffers || 0),
+            unit: 'MB'
+        },
+        usage: {
+            percent: Math.round((mem.rss / (512 * 1024 * 1024)) * 100),
+            available: toMB((512 * 1024 * 1024) - mem.rss),
+            status: mem.rss > (512 * 1024 * 1024 * 0.9) ? '🚨 CRITICAL' :
+                mem.rss > (512 * 1024 * 1024 * 0.8) ? '⚠️ WARNING' :
+                    mem.rss > (512 * 1024 * 1024 * 0.6) ? '📈 ELEVATED' : '✅ OK'
+        },
+        batchProcessor: stats.memory || null,
+        recommendations: []
+    };
+
+    // Add recommendations based on memory usage
+    if (memoryInfo.usage.percent > 80) {
+        memoryInfo.recommendations.push('Consider reducing CONCURRENT_JOBS');
+    }
+    if (memoryInfo.usage.percent > 90) {
+        memoryInfo.recommendations.push('URGENT: Memory near limit, reduce batch size immediately');
+    }
+    if (memoryInfo.usage.percent < 50) {
+        memoryInfo.recommendations.push('Memory usage low, you can try increasing CONCURRENT_JOBS');
+    }
+
+    res.json(memoryInfo);
+});
+
+/**
  * Batch processor status endpoint
  */
 app.get('/batch/status', (req, res) => {
     const stats = getStats();
+    const mem = process.memoryUsage();
+
     res.json({
         success: true,
         batchProcessor: {
             enabled: process.env.ENABLE_BATCH_PROCESSOR === 'true',
             ...stats
+        },
+        memoryQuickView: {
+            rss_mb: Math.round(mem.rss / 1024 / 1024 * 100) / 100,
+            heap_mb: Math.round(mem.heapUsed / 1024 / 1024 * 100) / 100,
+            percent: Math.round((mem.rss / (512 * 1024 * 1024)) * 100) + '%'
         }
     });
 });
@@ -355,20 +411,24 @@ app.get('/batch/status', (req, res) => {
  */
 app.get('/', (req, res) => {
     const batchEnabled = process.env.ENABLE_BATCH_PROCESSOR === 'true';
+    const mem = process.memoryUsage();
     res.json({
         name: 'DreamLook Proxy Gateway',
-        version: '2.0.0',
+        version: '2.1.0',
         batchProcessor: batchEnabled ? 'enabled' : 'disabled',
+        memoryUsage: Math.round((mem.rss / (512 * 1024 * 1024)) * 100) + '%',
         endpoints: {
             '/proxy': 'POST - Forward single request through proxy',
             '/proxy-sticky': 'POST - Forward request with custom sticky proxy config',
             '/proxy/batch': 'POST - Forward multiple requests through proxy',
-            '/batch/status': 'GET - Batch processor status',
+            '/batch/status': 'GET - Batch processor status with memory',
+            '/memory': 'GET - Detailed memory monitoring (FREE TIER OPTIMIZATION)',
             '/health': 'GET - Health check',
             '/test-proxy': 'GET - Test proxy connection'
         }
     });
 });
+
 
 // Start server
 const PORT = process.env.PORT || 3000;

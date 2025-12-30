@@ -189,7 +189,7 @@ function log(message, data = null) {
 }
 
 // ==========================================
-// STATS
+// STATS & MEMORY MONITORING
 // ==========================================
 
 const stats = {
@@ -200,13 +200,97 @@ const stats = {
     totalErrors: 0,
     currentlyProcessing: 0,
     lastPollTime: null,
+    // Memory tracking
+    peakMemoryUsed: 0,
+    peakMemoryTime: null,
+    memoryHistory: [], // Last 30 samples for trend
 };
 
+/**
+ * Get current memory usage in MB
+ */
+function getMemoryUsage() {
+    const mem = process.memoryUsage();
+    return {
+        heapUsed: Math.round(mem.heapUsed / 1024 / 1024 * 100) / 100,  // MB
+        heapTotal: Math.round(mem.heapTotal / 1024 / 1024 * 100) / 100,  // MB
+        external: Math.round(mem.external / 1024 / 1024 * 100) / 100,  // MB
+        rss: Math.round(mem.rss / 1024 / 1024 * 100) / 100,  // MB (Resident Set Size - total memory allocated)
+        arrayBuffers: Math.round((mem.arrayBuffers || 0) / 1024 / 1024 * 100) / 100,  // MB
+    };
+}
+
+/**
+ * Update peak memory tracking
+ */
+function updateMemoryStats() {
+    const mem = getMemoryUsage();
+    const now = new Date().toISOString();
+
+    // Update peak memory
+    if (mem.rss > stats.peakMemoryUsed) {
+        stats.peakMemoryUsed = mem.rss;
+        stats.peakMemoryTime = now;
+    }
+
+    // Keep last 30 samples for trend analysis
+    stats.memoryHistory.push({
+        timestamp: now,
+        rss: mem.rss,
+        heapUsed: mem.heapUsed,
+        processing: stats.currentlyProcessing
+    });
+
+    if (stats.memoryHistory.length > 30) {
+        stats.memoryHistory.shift();
+    }
+
+    return mem;
+}
+
+/**
+ * Calculate memory trend (increasing/stable/decreasing)
+ */
+function getMemoryTrend() {
+    if (stats.memoryHistory.length < 5) return 'insufficient_data';
+
+    const recent = stats.memoryHistory.slice(-5);
+    const older = stats.memoryHistory.slice(-10, -5);
+
+    if (older.length === 0) return 'insufficient_data';
+
+    const recentAvg = recent.reduce((sum, m) => sum + m.rss, 0) / recent.length;
+    const olderAvg = older.reduce((sum, m) => sum + m.rss, 0) / older.length;
+
+    const diff = ((recentAvg - olderAvg) / olderAvg) * 100;
+
+    if (diff > 10) return '📈 INCREASING';
+    if (diff < -10) return '📉 DECREASING';
+    return '📊 STABLE';
+}
+
 function getStats() {
+    const mem = getMemoryUsage();
+    const renderFreeLimit = 512; // Render free tier = 512MB
+
     return {
         ...stats,
         uptime: stats.startTime ? Math.floor((Date.now() - stats.startTime) / 1000) : 0,
         status: stats.currentlyProcessing > 0 ? 'processing' : 'idle',
+        memory: {
+            current: mem,
+            peak: {
+                rss: stats.peakMemoryUsed,
+                recordedAt: stats.peakMemoryTime
+            },
+            trend: getMemoryTrend(),
+            renderLimit: renderFreeLimit,
+            usagePercent: Math.round((mem.rss / renderFreeLimit) * 100),
+            peakPercent: Math.round((stats.peakMemoryUsed / renderFreeLimit) * 100),
+            available: Math.round((renderFreeLimit - mem.rss) * 100) / 100,
+            warning: mem.rss > (renderFreeLimit * 0.8) ? '⚠️ HIGH MEMORY USAGE!' : null
+        },
+        recentMemoryHistory: stats.memoryHistory.slice(-10) // Last 10 samples
     };
 }
 
@@ -899,12 +983,43 @@ async function startBatchProcessor() {
 
     stats.startTime = Date.now();
 
+    // Log initial memory
+    const initialMem = getMemoryUsage();
+    log(`📊 Initial Memory: RSS=${initialMem.rss}MB, Heap=${initialMem.heapUsed}/${initialMem.heapTotal}MB`);
+
+    // Memory logging interval (every 30 seconds)
+    let memoryLogCounter = 0;
+
     // Main loop
     while (true) {
         try {
             stats.lastPollTime = Date.now();
 
             const processed = await processPendingBatch();
+
+            // Update memory stats
+            const mem = updateMemoryStats();
+            memoryLogCounter++;
+
+            // Log memory every 3 cycles (~30 seconds) or when processing
+            const shouldLogMemory = memoryLogCounter >= 3 || stats.currentlyProcessing > 0;
+
+            if (shouldLogMemory) {
+                memoryLogCounter = 0;
+                const renderFreeLimit = 512;
+                const usagePercent = Math.round((mem.rss / renderFreeLimit) * 100);
+                const trend = getMemoryTrend();
+
+                log(`📊 Memory: RSS=${mem.rss}MB (${usagePercent}%) | Heap=${mem.heapUsed}/${mem.heapTotal}MB | Peak=${stats.peakMemoryUsed}MB | Jobs=${stats.currentlyProcessing} | ${trend}`);
+
+                // Warning if approaching limit
+                if (mem.rss > renderFreeLimit * 0.8) {
+                    log(`⚠️ WARNING: Memory usage at ${usagePercent}% of Render free tier limit (512MB)!`);
+                }
+                if (mem.rss > renderFreeLimit * 0.9) {
+                    log(`🚨 CRITICAL: Memory at ${usagePercent}%! Risk of OOM crash. Consider reducing CONCURRENT_JOBS.`);
+                }
+            }
 
             // If no jobs, wait before next poll
             if (processed === 0) {
