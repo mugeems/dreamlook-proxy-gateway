@@ -211,6 +211,109 @@ function getStats() {
 }
 
 // ==========================================
+// ERROR MESSAGE TRANSFORMATION
+// ==========================================
+
+/**
+ * Transform technical error messages to user-friendly messages
+ * This prevents exposing internal URLs and technical details to users
+ */
+function getUserFriendlyErrorMessage(technicalError) {
+    const errorLower = (technicalError || '').toLowerCase();
+
+    // Network/Connection errors
+    if (errorLower.includes('socket hang up') ||
+        errorLower.includes('socket disconnected') ||
+        errorLower.includes('econnreset') ||
+        errorLower.includes('econnrefused')) {
+        return 'Connection interrupted during generation. Credits refunded.';
+    }
+
+    if (errorLower.includes('tls') ||
+        errorLower.includes('ssl') ||
+        errorLower.includes('secure connection')) {
+        return 'Secure connection failed. Please try again. Credits refunded.';
+    }
+
+    if (errorLower.includes('timeout') ||
+        errorLower.includes('timed out') ||
+        errorLower.includes('etimedout')) {
+        return 'Generation took too long and was cancelled. Credits refunded.';
+    }
+
+    if (errorLower.includes('network') ||
+        errorLower.includes('fetch failed') ||
+        errorLower.includes('enotfound')) {
+        return 'Network error occurred. Please try again. Credits refunded.';
+    }
+
+    // Flowith/Generation errors
+    if (errorLower.includes('insufficient_credits') ||
+        errorLower.includes('insufficient credits')) {
+        return 'Service temporarily busy. Credits refunded.';
+    }
+
+    if (errorLower.includes('accounts exhausted') ||
+        errorLower.includes('no available')) {
+        return 'Service temporarily at capacity. Credits refunded.';
+    }
+
+    if (errorLower.includes('content') &&
+        (errorLower.includes('moderation') ||
+            errorLower.includes('filter') ||
+            errorLower.includes('blocked'))) {
+        return 'Your prompt was blocked by content filter. Please modify your prompt. Credits refunded.';
+    }
+
+    if (errorLower.includes('rate limit') ||
+        errorLower.includes('too many requests') ||
+        errorLower.includes('429')) {
+        return 'Service is busy. Please try again in a moment. Credits refunded.';
+    }
+
+    if (errorLower.includes('overload') ||
+        errorLower.includes('capacity') ||
+        errorLower.includes('503') ||
+        errorLower.includes('500 internal server error')) {
+        return 'Server is temporarily overloaded. Credits refunded.';
+    }
+
+    if (errorLower.includes('login failed') ||
+        errorLower.includes('authentication') ||
+        errorLower.includes('unauthorized') ||
+        errorLower.includes('401')) {
+        return 'Authentication error. Please try again. Credits refunded.';
+    }
+
+    if (errorLower.includes('generation failed') && !errorLower.includes(':')) {
+        return 'Image generation failed. Credits refunded.';
+    }
+
+    // Provider errors from Flowith
+    if (errorLower.includes('provider_error') ||
+        errorLower.includes('provider error')) {
+        return 'AI provider error. Credits refunded.';
+    }
+
+    // Generic fallback - hide any URL patterns
+    if (technicalError && (technicalError.includes('http://') || technicalError.includes('https://'))) {
+        return 'Generation failed due to a temporary issue. Credits refunded.';
+    }
+
+    // If it's already user-friendly (short and no URLs), keep it
+    if (technicalError && technicalError.length < 100 && !technicalError.includes('://')) {
+        // Append refund message if not already present
+        if (!errorLower.includes('refund')) {
+            return technicalError + '. Credits refunded.';
+        }
+        return technicalError;
+    }
+
+    // Default fallback
+    return 'Generation failed. Credits have been refunded to your account.';
+}
+
+// ==========================================
 // WORKERS API CALLS
 // ==========================================
 
@@ -707,8 +810,12 @@ async function processJob(job) {
     } catch (error) {
         log(`   ❌ Job failed: ${error.message}`);
 
-        // Refund the job
-        await refundJob(job.id, error.message);
+        // Transform technical error to user-friendly message
+        const userFriendlyError = getUserFriendlyErrorMessage(error.message);
+        log(`   📝 User message: ${userFriendlyError}`);
+
+        // Refund the job with user-friendly error
+        await refundJob(job.id, userFriendlyError);
         stats.totalRefunded++;
         stats.currentlyProcessing--;
 
