@@ -12,6 +12,33 @@ const { startBatchProcessor, getStats } = require('./batch-processor');
 
 const app = express();
 
+// CORS middleware - allow requests from admin dashboard
+app.use((req, res, next) => {
+    // Allow specific origins
+    const allowedOrigins = [
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'https://admin.dreamlook.space',
+        'https://dreamlook-admin.pages.dev'
+    ];
+
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin) || !origin) {
+        res.header('Access-Control-Allow-Origin', origin || '*');
+    }
+
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Gateway-Secret');
+    res.header('Access-Control-Max-Age', '86400'); // 24 hours
+
+    // Handle preflight
+    if (req.method === 'OPTIONS') {
+        return res.sendStatus(200);
+    }
+
+    next();
+});
+
 // Handle large payloads (for image uploads, etc.)
 app.use(express.json({ limit: '50mb' }));
 app.use(express.text({ limit: '50mb' }));
