@@ -8,6 +8,7 @@
 const express = require('express');
 const fetch = require('node-fetch');
 const { HttpsProxyAgent } = require('https-proxy-agent');
+const { startBatchProcessor, getStats } = require('./batch-processor');
 
 const app = express();
 
@@ -336,16 +337,33 @@ app.get('/test-proxy', async (req, res) => {
 });
 
 /**
+ * Batch processor status endpoint
+ */
+app.get('/batch/status', (req, res) => {
+    const stats = getStats();
+    res.json({
+        success: true,
+        batchProcessor: {
+            enabled: process.env.ENABLE_BATCH_PROCESSOR === 'true',
+            ...stats
+        }
+    });
+});
+
+/**
  * Root endpoint
  */
 app.get('/', (req, res) => {
+    const batchEnabled = process.env.ENABLE_BATCH_PROCESSOR === 'true';
     res.json({
         name: 'DreamLook Proxy Gateway',
-        version: '1.1.0',
+        version: '2.0.0',
+        batchProcessor: batchEnabled ? 'enabled' : 'disabled',
         endpoints: {
             '/proxy': 'POST - Forward single request through proxy',
             '/proxy-sticky': 'POST - Forward request with custom sticky proxy config',
             '/proxy/batch': 'POST - Forward multiple requests through proxy',
+            '/batch/status': 'GET - Batch processor status',
             '/health': 'GET - Health check',
             '/test-proxy': 'GET - Test proxy connection'
         }
@@ -354,12 +372,28 @@ app.get('/', (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
+const ENABLE_BATCH_PROCESSOR = process.env.ENABLE_BATCH_PROCESSOR === 'true';
+
 app.listen(PORT, () => {
     console.log('='.repeat(60));
-    console.log('DreamLook Proxy Gateway');
+    console.log('DreamLook Proxy Gateway v2.0.0');
     console.log('='.repeat(60));
     console.log(`Server running on port ${PORT}`);
     console.log(`Proxy Host: ${PROXY_HOST}:${PROXY_PORT}`);
     console.log(`Proxy User: ${PROXY_USER.substring(0, 10)}...`);
+    console.log(`Batch Processor: ${ENABLE_BATCH_PROCESSOR ? 'ENABLED' : 'DISABLED'}`);
     console.log('='.repeat(60));
+
+    // Start batch processor if enabled
+    if (ENABLE_BATCH_PROCESSOR) {
+        console.log('');
+        console.log('Starting Batch Processor...');
+        startBatchProcessor().catch(err => {
+            console.error('Batch processor error:', err);
+        });
+    } else {
+        console.log('');
+        console.log('Batch processor is disabled.');
+        console.log('Set ENABLE_BATCH_PROCESSOR=true to enable.');
+    }
 });
